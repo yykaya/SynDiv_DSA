@@ -91,10 +91,13 @@ class BedWriter:
             return
         open_here = self.end[syn_idx] > 0
         contiguous = np.zeros(syn_idx.size, dtype=bool)
-        contiguous[open_here] = self.end[syn_idx[open_here]] == s - 1
+        # coor.out rows share their boundary base with the previous row
+        # (multiinter emits 22-56, 56-809), so ">= s - 1" is the right test:
+        # touching *or* overlapping intervals belong to the same block
+        contiguous[open_here] = self.end[syn_idx[open_here]] >= s - 1
 
         extend = syn_idx[contiguous]
-        self.end[extend] = e
+        self.end[extend] = np.maximum(self.end[extend], e)
 
         fresh = syn_idx[~contiguous]
         if fresh.size:
@@ -160,6 +163,12 @@ def main():
     syn_bp = np.zeros(n_acc, dtype=np.int64)
     syn_bp_chr = {c: np.zeros(n_acc, dtype=np.int64) for c in sizes}
     covered_chr = {c: 0 for c in sizes}
+    # last reference base already counted, per accession and for the union of
+    # all rows: consecutive coor rows overlap by their shared boundary base and
+    # must not be counted twice
+    last_end = np.zeros(n_acc, dtype=np.int64)
+    cov_last_end = 0
+    cur_chrom = None
     win_bp = {}       # window size -> chrom -> (n_acc x n_win) syntenic bp
     for w in windows:
         win_bp[w] = {c: np.zeros((n_acc, (L + w - 1) // w), dtype=np.int32) for c, L in sizes.items()}
@@ -182,7 +191,11 @@ def main():
         if e < s:
             continue
 
-        length = e - s + 1
+        if chrom != cur_chrom:
+            last_end[:] = 0
+            cov_last_end = 0
+            cur_chrom = chrom
+
         qs = parts[4::3]
         qe = parts[5::3]
         syn = np.fromiter(
@@ -191,21 +204,35 @@ def main():
         )
         idx = np.flatnonzero(syn)
 
-        covered_chr[chrom] += length
+        # reference bases covered by any row, counted once
+        cs = max(s, cov_last_end + 1)
+        if e >= cs:
+            covered_chr[chrom] += e - cs + 1
+        if e > cov_last_end:
+            cov_last_end = e
+
         if idx.size:
-            syn_bp[idx] += length
-            syn_bp_chr[chrom][idx] += length
-            for w in windows:
-                arr = win_bp[w][chrom]
-                w0 = (s - 1) // w
-                w1 = (e - 1) // w
-                if w0 == w1:
-                    arr[idx, w0] += length
-                else:
-                    arr[idx, w0] += (w0 + 1) * w - (s - 1)
-                    if w1 > w0 + 1:
-                        arr[np.ix_(idx, np.arange(w0 + 1, w1))] += w
-                    arr[idx, w1] += e - w1 * w
+            # per accession, start after whatever was already counted for it
+            eff = np.maximum(last_end[idx] + 1, s)
+            for st in np.unique(eff):
+                if st > e:
+                    continue
+                sub = idx[eff == st]
+                length = e - st + 1
+                syn_bp[sub] += length
+                syn_bp_chr[chrom][sub] += length
+                for w in windows:
+                    arr = win_bp[w][chrom]
+                    w0 = (st - 1) // w
+                    w1 = (e - 1) // w
+                    if w0 == w1:
+                        arr[sub, w0] += length
+                    else:
+                        arr[sub, w0] += (w0 + 1) * w - (st - 1)
+                        if w1 > w0 + 1:
+                            arr[np.ix_(sub, np.arange(w0 + 1, w1))] += w
+                        arr[sub, w1] += e - w1 * w
+            last_end[idx] = np.maximum(last_end[idx], e)
         beds.add(chrom, s, e, idx)
 
         n_rows += 1

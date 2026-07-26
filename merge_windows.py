@@ -73,8 +73,10 @@ def hudson_fst(p1, p2, n1, n2):
     if n2 > 1:
         num = num - p2 * (1 - p2) / (n2 - 1)
     den = p1 * (1 - p2) + p2 * (1 - p1)
+    # guard against a denominator that is zero up to floating-point noise
+    # (both populations fixed for the same state -> Fst undefined, not huge)
     with np.errstate(divide="ignore", invalid="ignore"):
-        out = np.where(den > 0, num / den, np.nan)
+        out = np.where(den > 1e-9, num / np.where(den > 1e-9, den, 1.0), np.nan)
     return out
 
 
@@ -193,7 +195,8 @@ def main():
                 m = float(np.nanmean(master[col].to_numpy(dtype=float)))
                 mat.loc[a, b] = m
                 mat.loc[b, a] = m
-        np.fill_diagonal(mat.values, 0.0)
+        for p in pops:
+            mat.loc[p, p] = 0.0
         out = f"{args.out_prefix}.{label}_matrix.tsv"
         mat.to_csv(out, sep="\t", float_format="%.6f")
         info(f"wrote {out}")

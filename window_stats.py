@@ -94,6 +94,11 @@ def main():
     ap.add_argument("--pops", default="")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--min-class-windows", type=int, default=20)
+    ap.add_argument("--zero-fill",
+                    default="SV_,CEN_,NLR_,GENE_COUNT,GENE_BP,GENE_FRAC,GENE_SYN_CORE,GENE_SYN_SHELL,GENE_SYN_CLOUD",
+                    help="comma-separated column prefixes where a missing join means 'none here', "
+                         "not 'unknown' — those NaNs become 0. Averages such as GENE_SYNFREQ_MEAN "
+                         "stay NaN on purpose: a window without genes has no mean.")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -119,6 +124,17 @@ def main():
         annot_cols += new
     annot_cols = [c for c in dict.fromkeys(annot_cols) if c in master.columns]
     info(f"annotation columns: {len(annot_cols)}")
+
+    # A window with no SV / no gene / no centromere overlap is simply absent from
+    # those tables. Left-joining turns that into NaN, which would silently drop
+    # the window from every test — count-like columns must read 0 instead.
+    prefixes = tuple(p for p in args.zero_fill.split(",") if p)
+    zeroed = [c for c in annot_cols if c.startswith(prefixes)]
+    if zeroed:
+        master[zeroed] = master[zeroed].fillna(0)
+        info(f"zero-filled {len(zeroed)} count columns: {', '.join(zeroed[:8])}"
+             + (" ..." if len(zeroed) > 8 else ""))
+    master = master.copy()   # defragment after the merges
 
     classes = pd.DataFrame()
     if args.classes and os.path.exists(args.classes):
